@@ -104,6 +104,20 @@ const functionCallOutputItemSchema = z.object({
   output: z.union([z.string(), z.array(contentPartSchema), z.record(z.string(), z.unknown())]),
 });
 
+const customToolCallItemSchema = z.object({
+  type: z.literal('custom_tool_call'),
+  call_id: z.string(),
+  name: z.string(),
+  input: z.string(),
+  id: z.string().optional(),
+}).passthrough();
+
+const customToolCallOutputItemSchema = z.object({
+  type: z.literal('custom_tool_call_output'),
+  call_id: z.string(),
+  output: z.union([z.string(), z.array(contentPartSchema), z.record(z.string(), z.unknown())]),
+}).passthrough();
+
 // Remaining official ResponseInputItemParam kinds. Codex computer-use round-trips
 // `computer_call` (the model's action request) and `computer_call_output` (the
 // harness's result, incl. screenshots); multi-turn sessions also replay
@@ -160,6 +174,8 @@ const otherKnownItemSchema = z.object({
 const inputItemSchema = z.union([
   functionCallItemSchema,
   functionCallOutputItemSchema,
+  customToolCallItemSchema,
+  customToolCallOutputItemSchema,
   computerCallItemSchema,
   computerCallOutputItemSchema,
   reasoningItemSchema,
@@ -360,6 +376,29 @@ export function toChatMessages(req: ResponsesRequest): ChatMessage[] {
       continue;
     }
 
+    if ('type' in item && item.type === 'custom_tool_call') {
+      messages.push({
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: item.call_id,
+          type: 'function',
+          function: { name: item.name, arguments: JSON.stringify({ input: item.input }) },
+        }],
+      });
+      continue;
+    }
+
+    if ('type' in item && item.type === 'custom_tool_call_output') {
+      const output = typeof item.output === 'string'
+        ? item.output
+        : Array.isArray(item.output)
+          ? partsToString(item.output as any)
+          : JSON.stringify(item.output);
+      messages.push({ role: 'tool', tool_call_id: item.call_id, content: output });
+      continue;
+    }
+
     if ('type' in item && item.type !== 'message') {
       // computer_call / computer_call_output / reasoning / local_shell_call:
       // no chat-message equivalent (the route 422s computer use up front).
@@ -422,21 +461,40 @@ export function toChatMessages(req: ResponsesRequest): ChatMessage[] {
 
 export function toChatTools(tools?: ResponsesRequest['tools']): ChatToolDefinition[] | undefined {
   if (!tools?.length) return undefined;
-  // Forward only function tools — chat-completions upstreams reject other
-  // Responses-API tool types (web_search, local_shell, etc.). Codex sends those
-  // extras alongside its function tools (shell/exec, apply_patch); dropping them
-  // keeps the request valid without losing the tools that actually do the work.
-  const fns = tools.filter((t): t is typeof t & { name: string } => t.type === 'function' && typeof t.name === 'string');
+  // A Responses custom tool carries free-form text. Chat-completions providers
+  // only understand function tools, so expose it upstream as a one-field JSON
+  // function and translate the result back to custom_tool_call below.
+  const fns = tools.filter((t): t is typeof t & { name: string } =>
+    (t.type === 'function' || t.type === 'custom') && typeof t.name === 'string');
   if (!fns.length) return undefined;
   return fns.map((t) => ({
     type: 'function',
     function: {
       name: t.name,
       ...(t.description ? { description: t.description } : {}),
-      ...(t.parameters ? { parameters: t.parameters } : {}),
+      ...(t.type === 'custom'
+        ? {
+            parameters: {
+              type: 'object',
+              properties: { input: { type: 'string', description: 'Raw free-form input for this custom tool.' } },
+              required: ['input'],
+              additionalProperties: false,
+            },
+          }
+        : t.parameters ? { parameters: t.parameters } : {}),
       ...(t.strict != null ? { strict: t.strict } : {}),
     },
   }));
+}
+
+function customToolInput(argumentsJson: string): string {
+  try {
+    const parsed = JSON.parse(argumentsJson) as { input?: unknown };
+    if (typeof parsed.input === 'string') return parsed.input;
+  } catch {
+    // Some local models emit the raw custom-tool input despite the wrapper.
+  }
+  return argumentsJson;
 }
 
 export function toChatToolChoice(tc?: ResponsesRequest['tool_choice']): ChatToolChoice | undefined {
@@ -458,6 +516,7 @@ export function buildResponseObject(opts: {
   promptTokens: number;
   completionTokens: number;
   reasoningTokens?: number;
+  customToolNames?: ReadonlySet<string>;
 }) {
   const output: any[] = [];
   if (opts.text.length > 0) {
@@ -470,6 +529,17 @@ export function buildResponseObject(opts: {
     });
   }
   for (const tc of opts.toolCalls) {
+    if (opts.customToolNames?.has(tc.function.name)) {
+      output.push({
+        type: 'custom_tool_call',
+        id: newId('ctc'),
+        call_id: tc.id,
+        name: tc.function.name,
+        input: customToolInput(tc.function.arguments),
+        status: 'completed',
+      });
+      continue;
+    }
     output.push({
       type: 'function_call',
       id: newId('fc'),
@@ -534,6 +604,11 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   }
 
   const reqData = parsed.data;
+  const customToolNames = new Set(
+    (reqData.tools ?? [])
+      .filter((tool): tool is typeof tool & { name: string } => tool.type === 'custom' && typeof tool.name === 'string')
+      .map((tool) => tool.name),
+  );
 
   // Computer use can't survive the chat-completions translation either (no
   // computer tool, no screenshot context). Fail clearly instead of silently
@@ -793,7 +868,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
         // output_index of the open text item (valid while msgItemId !== null).
         let textOutputIndex = 0;
         // tool-call accumulator keyed by the provider's tool_call index
-        const toolAcc = new Map<number, { outputIndex: number; itemId: string; callId: string; name: string; args: string }>();
+        const toolAcc = new Map<number, { outputIndex: number; itemId: string; callId: string; name: string; args: string; custom: boolean; opened: boolean }>();
         let totalOutputTokens = 0;
         // #764: thinking tokens are tracked separately so the final Response
         // object can report `output_tokens_details.reasoning_tokens` truthfully
@@ -940,18 +1015,24 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
                   sse('response.output_item.done', { output_index: textOutputIndex, item: { id: msgItemId, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: msgText, annotations: [] }] } });
                   msgItemId = null;
                 }
-                acc = { outputIndex: outputIndex++, itemId: newId('fc'), callId: tc.id || newId('call'), name: tc.function?.name ?? '', args: '' };
+                const name = tc.function?.name ?? '';
+                const custom = customToolNames.has(name);
+                acc = { outputIndex: outputIndex++, itemId: newId(custom ? 'ctc' : 'fc'), callId: tc.id || newId('call'), name, args: '', custom, opened: !custom };
                 toolAcc.set(idx, acc);
-                sse('response.output_item.added', {
-                  output_index: acc.outputIndex,
-                  item: { id: acc.itemId, type: 'function_call', status: 'in_progress', call_id: acc.callId, name: acc.name, arguments: '' },
-                });
+                if (!custom) {
+                  sse('response.output_item.added', {
+                    output_index: acc.outputIndex,
+                    item: { id: acc.itemId, type: 'function_call', status: 'in_progress', call_id: acc.callId, name: acc.name, arguments: '' },
+                  });
+                }
               }
               const argFrag = tc.function?.arguments ?? '';
               if (tc.function?.name && !acc.name) acc.name = tc.function.name;
               if (argFrag) {
                 acc.args += argFrag;
-                sse('response.function_call_arguments.delta', { item_id: acc.itemId, output_index: acc.outputIndex, delta: argFrag });
+                if (!acc.custom) {
+                  sse('response.function_call_arguments.delta', { item_id: acc.itemId, output_index: acc.outputIndex, delta: argFrag });
+                }
               }
             }
           }
@@ -979,13 +1060,16 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
                 commit();
                 const acc = {
                   outputIndex: outputIndex++,
-                  itemId: newId('fc'), callId: newId('call'), name: c.name, args: c.arguments,
+                  itemId: newId(customToolNames.has(c.name) ? 'ctc' : 'fc'), callId: newId('call'), name: c.name, args: c.arguments,
+                  custom: customToolNames.has(c.name), opened: !customToolNames.has(c.name),
                 };
                 toolAcc.set(idx, acc);
-                sse('response.output_item.added', {
-                  output_index: acc.outputIndex,
-                  item: { id: acc.itemId, type: 'function_call', status: 'in_progress', call_id: acc.callId, name: acc.name, arguments: '' },
-                });
+                if (!acc.custom) {
+                  sse('response.output_item.added', {
+                    output_index: acc.outputIndex,
+                    item: { id: acc.itemId, type: 'function_call', status: 'in_progress', call_id: acc.callId, name: acc.name, arguments: '' },
+                  });
+                }
               }
             } else if (msgItemId === null) {
               // Plain short answer that never left the hold window (e.g. "Hi").
@@ -1044,6 +1128,21 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
           const finalToolCalls: ChatToolCall[] = [];
           for (const acc of toolAcc.values()) {
             const repairedArgs = repairToolArguments(acc.args, toolSchemas.get(acc.name));
+            if (acc.custom) {
+              const input = customToolInput(repairedArgs);
+              if (!acc.opened) {
+                sse('response.output_item.added', {
+                  output_index: acc.outputIndex,
+                  item: { id: acc.itemId, type: 'custom_tool_call', status: 'in_progress', call_id: acc.callId, name: acc.name, input: '' },
+                });
+              }
+              sse('response.output_item.done', {
+                output_index: acc.outputIndex,
+                item: { id: acc.itemId, type: 'custom_tool_call', status: 'completed', call_id: acc.callId, name: acc.name, input },
+              });
+              finalToolCalls.push({ id: acc.callId, type: 'function', function: { name: acc.name, arguments: repairedArgs } });
+              continue;
+            }
             sse('response.function_call_arguments.done', { item_id: acc.itemId, output_index: acc.outputIndex, arguments: repairedArgs });
             sse('response.output_item.done', { output_index: acc.outputIndex, item: { id: acc.itemId, type: 'function_call', status: 'completed', call_id: acc.callId, name: acc.name, arguments: repairedArgs } });
             finalToolCalls.push({ id: acc.callId, type: 'function', function: { name: acc.name, arguments: repairedArgs } });
@@ -1053,6 +1152,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
             id: responseId, model: route.modelId, text: msgText,
             toolCalls: finalToolCalls, promptTokens: estimatedInputTokens, completionTokens: totalOutputTokens,
             reasoningTokens: totalReasoningTokens,
+            customToolNames,
           });
           sse('response.completed', { response: finalResponse });
           res.end();
@@ -1190,6 +1290,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
       res.json(buildResponseObject({
         id: responseId, model: route.modelId, text, toolCalls,
         promptTokens, completionTokens, reasoningTokens,
+        customToolNames,
       }));
 
       traceRouteEvent('Responses', {
