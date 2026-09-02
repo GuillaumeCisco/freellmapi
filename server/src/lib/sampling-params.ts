@@ -25,11 +25,10 @@ import { z } from 'zod';
 import type { Platform } from '@freellmapi/shared/types.js';
 import { getSetting } from '../db/index.js';
 
-// OpenAI's request-side reasoning knob. Wire values as of the current OpenAI
-// API: 'minimal'|'low'|'medium'|'high', plus 'none' (gpt-5.1). Forwarded
-// verbatim to openai-compat platforms per the policy below; the Google
-// adapter maps it natively onto generationConfig.thinkingConfig.
-export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'] as const;
+// OpenAI's request-side reasoning knob, plus the xhigh extension accepted by
+// custom llama.cpp endpoints. Non-custom platforms keep the previous behavior:
+// xhigh is clamped to high unless their policy explicitly allows it.
+export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 
 // Effort spellings clients actually send that aren't on OpenAI's scale, mapped
@@ -40,7 +39,7 @@ export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 // nothing is forwarded and the provider default stands — same rule
 // effortFromGeminiThinking applies to a -1 thinking budget.
 const EFFORT_ALIASES: Readonly<Record<string, ReasoningEffort>> = {
-  max: 'high', maximum: 'high', highest: 'high', ultra: 'high', xhigh: 'high', 'x-high': 'high',
+  max: 'high', maximum: 'high', highest: 'high', ultra: 'high', 'x-high': 'xhigh',
   mid: 'medium', moderate: 'medium', balanced: 'medium', normal: 'medium', standard: 'medium',
   min: 'minimal', minimum: 'minimal', lowest: 'minimal', xlow: 'minimal', 'x-low': 'minimal',
   off: 'none', disabled: 'none', disable: 'none',
@@ -319,9 +318,13 @@ export function extendedBodyParams(platform: string, options: ExtendedSamplingOp
         && (value as { type?: string }).type === 'json_object') {
       value = ANY_OBJECT_SCHEMA;
     }
-    if (key === 'reasoning_effort' && policy?.reasoningEfforts) {
-      value = clampEffortTo(value as ReasoningEffort, policy.reasoningEfforts);
-      if (value === undefined) continue;
+    if (key === 'reasoning_effort') {
+      if (policy?.reasoningEfforts) {
+        value = clampEffortTo(value as ReasoningEffort, policy.reasoningEfforts);
+        if (value === undefined) continue;
+      } else if (value === 'xhigh' && platform !== 'custom') {
+        value = 'high';
+      }
     }
     out[policy?.rename?.[key] ?? key] = value;
   }

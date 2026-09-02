@@ -80,6 +80,8 @@ describe('toGeminiExtendedConfig', () => {
       .toEqual({ thinkingBudget: 8192, includeThoughts: true });
     expect(toGeminiExtendedConfig({ reasoning_effort: 'high' }).thinkingConfig)
       .toEqual({ thinkingBudget: 24576, includeThoughts: true });
+    expect(toGeminiExtendedConfig({ reasoning_effort: 'xhigh' }).thinkingConfig)
+      .toEqual({ thinkingBudget: 24576, includeThoughts: true });
   });
 
   it("reasoning_effort 'none'/'minimal' disables thinking (budget 0)", () => {
