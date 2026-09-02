@@ -161,10 +161,18 @@ describe('reasoning_effort normalization (#619 — off-scale values must not 400
     expect(normalizeReasoningEffort('  High ')).toBe('high');
   });
 
-  it("clamps 'max' and its spellings to the top of the scale", () => {
-    for (const alias of ['max', 'maximum', 'MAX', 'highest', 'ultra', 'xhigh', 'x-high']) {
+  it("clamps 'max' and its spellings to the standard top of the scale", () => {
+    for (const alias of ['max', 'maximum', 'MAX', 'highest', 'ultra']) {
       expect(normalizeReasoningEffort(alias)).toBe('high');
     }
+  });
+
+  it('preserves xhigh for custom endpoints and clamps it elsewhere', () => {
+    expect(normalizeReasoningEffort('xhigh')).toBe('xhigh');
+    expect(normalizeReasoningEffort('x-high')).toBe('xhigh');
+    expect(extendedBodyParams('custom', { reasoning_effort: 'xhigh' }).reasoning_effort).toBe('xhigh');
+    expect(extendedBodyParams('groq', { reasoning_effort: 'xhigh' }).reasoning_effort).toBe('high');
+    expect(extendedBodyParams('github', { reasoning_effort: 'xhigh' }).reasoning_effort).toBe('high');
   });
 
   it('clamps the other off-scale spellings to their nearest supported value', () => {

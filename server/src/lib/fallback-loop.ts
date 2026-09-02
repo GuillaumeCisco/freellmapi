@@ -22,6 +22,7 @@ import {
   recordRequest,
   recordTokens,
   setCooldown,
+  isLocalEndpointKey,
   getActiveCooldownsForKeys,
   getCooldownDecisionForLimit,
   getSoonestCooldownExpiry,
@@ -83,6 +84,15 @@ const modelFailureTimestamps = new Map<number, number[]>(); // model_db_id → t
  *  can route to it so the model sinks out of routing until upstream heals, then
  *  reset the counter (one bench per streak). */
 function noteModelFailure(route: RouteResult, now: number): void {
+  // Local inference endpoints have no provider quota and are already capped
+  // to a five-second per-key cooldown.  Do not let the cross-request model
+  // failure window overwrite that guarantee with a ten-minute model-wide
+  // bench after three transient 5xx responses (for example, a local model
+  // emitting malformed tool-call JSON while it is under load).
+  if (isLocalEndpointKey(route.keyId)) {
+    modelFailureTimestamps.delete(route.modelDbId);
+    return;
+  }
   const window = (modelFailureTimestamps.get(route.modelDbId) ?? [])
     .filter(t => now - t < MODEL_FAILURE_WINDOW_MS);
   window.push(now);

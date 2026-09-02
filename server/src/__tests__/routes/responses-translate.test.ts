@@ -132,6 +132,23 @@ describe('Responses → chat translation (#96)', () => {
     expect(msgs[0]).toEqual({ role: 'tool', tool_call_id: 'call_1', content: 'sunny' });
   });
 
+  it('round-trips custom tool calls through chat-completions function messages', () => {
+    const msgs = toChatMessages({
+      input: [
+        { type: 'custom_tool_call', call_id: 'call_exec', name: 'exec', input: 'text(42);' },
+        { type: 'custom_tool_call_output', call_id: 'call_exec', output: '42' },
+      ],
+    } as any);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call_exec', type: 'function', function: { name: 'exec', arguments: '{"input":"text(42);"}' } }],
+      },
+      { role: 'tool', tool_call_id: 'call_exec', content: '42' },
+    ]);
+  });
+
   it('merges an assistant message item with its following function_call items into one turn', () => {
     const msgs = toChatMessages({
       input: [
@@ -265,6 +282,17 @@ describe('Responses → chat translation (#96)', () => {
     ]);
   });
 
+  it('wraps a Responses custom tool as a one-field chat function', () => {
+    const tools = toChatTools([{ type: 'custom', name: 'exec', description: 'Run JavaScript' }] as any);
+    expect(tools?.[0]).toMatchObject({
+      type: 'function',
+      function: {
+        name: 'exec',
+        parameters: { type: 'object', required: ['input'], properties: { input: { type: 'string' } } },
+      },
+    });
+  });
+
   it('converts tool_choice forms', () => {
     expect(toChatToolChoice('auto' as any)).toBe('auto');
     expect(toChatToolChoice({ type: 'function', name: 'f' } as any)).toEqual({ type: 'function', function: { name: 'f' } });
@@ -291,5 +319,16 @@ describe('chat result → Responses object (#96)', () => {
     });
     expect(r.output).toHaveLength(1);
     expect(r.output[0]).toMatchObject({ type: 'function_call', call_id: 'call_1', name: 'f', arguments: '{}' });
+  });
+
+  it('translates wrapped custom-tool arguments back to custom_tool_call input', () => {
+    const r = buildResponseObject({
+      id: 'resp_x', model: 'm', text: '',
+      toolCalls: [{ id: 'call_exec', type: 'function', function: { name: 'exec', arguments: '{"input":"text(42);"}' } }],
+      promptTokens: 1, completionTokens: 1,
+      customToolNames: new Set(['exec']),
+    });
+    expect(r.output).toHaveLength(1);
+    expect(r.output[0]).toMatchObject({ type: 'custom_tool_call', call_id: 'call_exec', name: 'exec', input: 'text(42);' });
   });
 });

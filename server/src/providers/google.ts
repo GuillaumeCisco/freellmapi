@@ -260,9 +260,12 @@ export function toGeminiExtendedConfig(options?: CompletionOptions): Record<stri
   // extractReasoningContent).
   const effort = options?.reasoning_effort;
   if (effort) {
-    out.thinkingConfig = (effort === 'none' || effort === 'minimal')
-      ? { thinkingBudget: 0 }
-      : { thinkingBudget: EFFORT_THINKING_BUDGET[effort], includeThoughts: true };
+    if (effort === 'none' || effort === 'minimal') {
+      out.thinkingConfig = { thinkingBudget: 0 };
+    } else {
+      const googleEffort = effort === 'xhigh' ? 'high' : effort;
+      out.thinkingConfig = { thinkingBudget: EFFORT_THINKING_BUDGET[googleEffort], includeThoughts: true };
+    }
   }
   return out;
 }
