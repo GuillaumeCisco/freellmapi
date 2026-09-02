@@ -982,12 +982,12 @@ export interface CooldownDecision {
 // ── Local-endpoint exemption (#592) ──────────────────────────────────────────
 // A key whose base_url points at this machine or the LAN (custom-platform
 // Ollama / llama.cpp / LM Studio) has no provider quota to protect: every
-// cooldown longer than a few seconds just strands what is usually the user's
+// cooldown longer than a sub-second retry guard just strands what is usually the user's
 // ONLY route to that model, turning a slow local generation (timeout) into an
 // "All models exhausted" 429. Such keys are capped at this short bench and
 // never enter the escalation ladder. Source stays 'heuristic' so the
 // cooldown-probe recovery job may clear even that early.
-export const LOCAL_ENDPOINT_COOLDOWN_MS = 5_000;
+export const LOCAL_ENDPOINT_COOLDOWN_MS = 500;
 
 // base_url is immutable per key id (routes/keys.ts matches custom rows ON
 // base_url — a new endpoint gets a new row, #212), so the verdict can be
@@ -1056,7 +1056,7 @@ export function getCooldownDecisionForLimit(
 ): CooldownDecision {
   // Local inference endpoint (loopback/RFC1918 base_url): no quota exists, so
   // neither the transient 90s bench nor the escalation ladder applies — a
-  // failure there means "busy right now", and a few seconds is all the pool
+  // failure there means "busy right now", and a sub-second guard is all the pool
   // needs before retrying the user's (usually only) local route. Applies even
   // to a literal 429 (local servers emit them under concurrent load) and
   // ignores any Retry-After: both describe momentary busyness, not a quota.

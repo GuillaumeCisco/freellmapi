@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // RFC1918/private address is a LOCAL inference server (Ollama / llama.cpp /
 // LM Studio registered through the 'custom' platform). It has no provider
 // quota, so neither the 90s transient bench nor the 2m→24h escalation ladder
-// ever applies — the bench is capped at a few seconds, even for a literal 429
+// ever applies — the bench is capped below one second, even for a literal 429
 // (local servers emit those under concurrent load) and even when a Retry-After
 // is attached. Non-local keys (public IPs/hostnames, built-in platforms with
 // base_url NULL) keep the full pre-existing behavior.
@@ -15,7 +15,7 @@ import type { RouteResult } from '../../services/router.js';
 
 const MINUTE = 60_000;
 const TRANSIENT = 90_000;
-const LOCAL_CAP_MS = 5_000;
+const LOCAL_CAP_MS = 500;
 
 beforeAll(() => {
   process.env.ENCRYPTION_KEY = '0'.repeat(64);
