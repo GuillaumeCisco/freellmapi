@@ -97,6 +97,37 @@ beforeEach(() => {
 });
 
 describe('model-level failure benching covers every key of the model', () => {
+  it('never promotes failures from a local Tailscale endpoint to a ten-minute model bench', () => {
+    const { encrypted, iv, authTag } = encrypt('test-local-tailnet');
+    const info = getDb().prepare(`
+      INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
+      VALUES ('custom', 'lemon-tailnet', ?, ?, ?, 'healthy', 1, 'http://100.125.222.78:8080/v1')
+    `).run(encrypted, iv, authTag);
+    const localKey = Number(info.lastInsertRowid);
+    resetKeyLocalityCache();
+    const route: RouteResult = {
+      provider: {} as any,
+      modelId: 'qwen-local',
+      modelDbId: 990001,
+      apiKey: 'k',
+      keyId: localKey,
+      platform: 'custom',
+      displayName: 'Qwen local',
+      rpdLimit: null,
+      tpdLimit: null,
+    };
+
+    for (let i = 0; i < MODEL_FAILURE_THRESHOLD; i++) {
+      recordRetryableFailure(route, upstream500(), newFallbackState());
+    }
+
+    const cooldown = getActiveCooldownsForKeys([localKey])
+      .get(localKey)
+      ?.find(c => c.platform === 'custom' && c.modelId === route.modelId);
+    expect(cooldown).toBeDefined();
+    expect(cooldown!.remainingMs).toBeLessThan(10_000);
+  });
+
   it('benches BOTH keys once the window trips, even though only one key failed last', () => {
     // Three failures inside the window, spread across the two keys.
     failOnce(modelA, keyA);
