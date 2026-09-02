@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+generated/
+auth.json
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.before-*

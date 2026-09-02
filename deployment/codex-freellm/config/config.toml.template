@@ -1,0 +1,53 @@
+model = "{{FREELLM_MODEL}}"
+model_provider = "freellm"
+model_reasoning_effort = "xhigh"
+model_catalog_json = "{{MODEL_CATALOG_JSON}}"
+cli_auth_credentials_store = "file"
+mcp_oauth_credentials_store = "file"
+
+[model_providers.freellm]
+name = "FreeLLMAPI"
+base_url = "{{FREELLM_BASE_URL}}"
+wire_api = "responses"
+env_key = "FREELLMAPI_API_KEY"
+requires_openai_auth = true
+env_http_headers = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
+
+[features]
+auth_elicitation = true
+js_repl = false
+multi_agent_v2 = true
+tool_suggest = true
+
+[tool_suggest]
+discoverables = [{ type = "plugin", id = "atlassian-rovo@openai-curated-remote" }]
+
+[mcp_servers.node_repl]
+args = []
+command = "{{FREELLM_DESKTOP_RESOURCES}}/node_repl"
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
+NODE_REPL_NODE_MODULE_DIRS = ""
+NODE_REPL_NODE_PATH = "{{FREELLM_DESKTOP_RESOURCES}}/node-runtime/bin/node"
+NODE_REPL_TRUSTED_CODE_PATHS = "{{CODEX_HOME_DIR}}"
+CODEX_HOME = "{{CODEX_HOME_DIR}}"
+CODEX_CLI_PATH = "{{CODEX_CLI_PATH}}"
+
+[mcp_servers.node_repl.tools]
+
+[mcp_servers.node_repl.tools.js]
+approval_mode = "approve"
+
+[shell_environment_policy.set]
+NODE_REPL_TRUSTED_CODE_PATHS = "{{CODEX_HOME_DIR}}"
+
+[plugins."atlassian-rovo@openai-curated-remote"]
+enabled = true
+
+[desktop]
+conversationDetailMode = "STEPS_COMMANDS"
+ambient-suggestions-enabled = true
+followUpQueueMode = "queue"
+keepRemoteControlAwakeWhilePluggedIn = true
